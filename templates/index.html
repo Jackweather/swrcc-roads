@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NY Highway Cameras</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+  body, html {
+    margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif;
+    overflow: hidden;
+  }
+  #map { height: 100%; width: 100%; }
+
+  /* Fullscreen video panel */
+  #videoPanel {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #ede8f0;
+    color: black;
+    display: none;
+    z-index: 2000;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  #videoPanel h3 { margin: 0 0 8px 0; font-size: 18px; text-align: center; }
+  #videoPanel .video-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    width: 100%;
+    height: calc(100% - 40px);
+    padding: 4px;
+    box-sizing: border-box;
+  }
+  #videoPanel video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+    background-color: black;
+  }
+
+  /* Buttons */
+  #multiSelectBtn, #showSelectedBtn, #closeBtn {
+    position: absolute; z-index: 2100; padding: 6px 12px;
+    border: none; border-radius: 6px; cursor: pointer; font-weight: bold;
+  }
+  #multiSelectBtn { top: 10px; right: 10px; background: #4b0082; color: white; }
+  #showSelectedBtn { top: 50px; right: 10px; background: #008080; color: white; display: none; }
+  #closeBtn { top: 10px; right: 10px; background: rgba(255,255,255,0.8); }
+
+  /* Circle markers */
+  .camera-marker {
+    background-color: blue;
+    color: white;
+    font-weight: bold;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid white;
+    box-shadow: 0 0 2px black;
+  }
+  .camera-marker.selected { background-color: darkorange; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<button id="multiSelectBtn">Select Multiple Cameras</button>
+<button id="showSelectedBtn">Show Selected Cameras</button>
+
+<div id="videoPanel">
+  <button id="closeBtn">×</button>
+  <h3 id="cameraTitle">Selected Cameras</h3>
+  <div class="video-grid" id="videoGrid"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.0/dist/hls.min.js"></script>
+<script>
+const apiUrl = "/api/cameras"; // Flask backend
+
+let cameras = [];
+let multiSelectMode = false;
+let selectedCameras = [];
+
+const map = L.map('map').setView([44.0, -74.9481], 7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const markersLayer = L.layerGroup().addTo(map);
+
+// Fetch cameras and plot
+fetch(apiUrl)
+  .then(res => res.json())
+  .then(data => {
+    const northern = data.filter(c => c.VideoUrl && c.Latitude >= 41.5);
+    const southern = data.filter(c => c.VideoUrl && c.Latitude < 41.5);
+    cameras = northern.concat(southern);
+    shuffleArray(cameras);
+    cameras.forEach(addMarker);
+  })
+  .catch(err => console.error(err));
+
+function shuffleArray(array) {
+  for (let i = array.length-1; i>0; i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+}
+
+function addMarker(camera){
+  const index = cameras.indexOf(camera)+1;
+  const icon = L.divIcon({
+    className: "camera-marker",
+    html: index,
+    iconSize: [28,28],
+    iconAnchor: [14,14]
+  });
+
+  const marker = L.marker([camera.Latitude, camera.Longitude], {icon: icon}).addTo(markersLayer);
+
+  marker.on('click', ()=>{
+    if(multiSelectMode){
+      toggleSelection(marker, camera);
+    } else {
+      showVideoPanel([camera]);
+    }
+  });
+
+  camera._marker = marker;
+}
+
+function toggleSelection(marker, camera){
+  const idx = selectedCameras.indexOf(camera);
+  if(idx === -1 && selectedCameras.length < 6){
+    selectedCameras.push(camera);
+    marker._icon.classList.add('selected');
+  } else if(idx > -1){
+    selectedCameras.splice(idx,1);
+    marker._icon.classList.remove('selected');
+  }
+  document.getElementById('showSelectedBtn').style.display = selectedCameras.length > 0 ? 'block':'none';
+}
+
+function showVideoPanel(camerasToShow){
+  const panel = document.getElementById('videoPanel');
+  const grid = document.getElementById('videoGrid');
+  grid.innerHTML = '';
+  camerasToShow.forEach(c=>{
+    const vid = document.createElement('video');
+    vid.controls = true;
+    vid.autoplay = true;
+    if(Hls.isSupported()){
+      const hls = new Hls();
+      hls.loadSource(c.VideoUrl);
+      hls.attachMedia(vid);
+    } else {
+      vid.src = c.VideoUrl;
+    }
+    grid.appendChild(vid);
+  });
+  panel.style.display = 'block';
+}
+
+// Close video panel
+document.getElementById('closeBtn').addEventListener('click', ()=>{
+  const panel = document.getElementById('videoPanel');
+  const vids = panel.querySelectorAll('video');
+  vids.forEach(v=>{ v.pause(); v.src=''; });
+  panel.style.display = 'none';
+});
+
+// Multi-select toggle
+document.getElementById('multiSelectBtn').addEventListener('click', ()=>{
+  multiSelectMode = !multiSelectMode;
+  selectedCameras = [];
+  cameras.forEach(c=>{
+    if(c._marker && c._marker._icon) c._marker._icon.classList.remove('selected');
+  });
+  document.getElementById('showSelectedBtn').style.display = 'none';
+  document.getElementById('multiSelectBtn').innerText = multiSelectMode ? 'Multi-Select ON' : 'Select Multiple Cameras';
+});
+
+// Show selected videos fullscreen
+document.getElementById('showSelectedBtn').addEventListener('click', ()=>{
+  if(selectedCameras.length > 0){
+    showVideoPanel(selectedCameras);
+  }
+});
+</script>
+</body>
+</html>

@@ -3,14 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NY Highway Cameras</title>
+<title>NY Highway Cameras with Radar</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 <style>
   body, html {
     margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif;
     overflow: hidden;
   }
-  #map { height: 100%; width: 100%; }
+
+  /* Top header */
+  #topHeader {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 50px;
+    background-color: rgba(0,0,0,0.7);
+    color: white;
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    z-index: 2200;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+  #topHeader button {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  #multiSelectBtn { background: #4b0082; color: white; }
+  #showSelectedBtn { background: #008080; color: white; display: none; }
+  #cancelMultiBtn { background: #ff4c4c; color: white; display: none; }
+  #goHelloBtn { background: #ffa500; color: white; }
+
+  /* Map sits below the header */
+  #map { 
+    position: absolute;
+    top: 50px; /* header height */
+    left: 0;
+    width: 100%; 
+    height: calc(100% - 50px);
+  }
 
   /* Fullscreen video panel */
   #videoPanel {
@@ -21,17 +56,15 @@
     background-color: #ede8f0;
     color: black;
     display: none;
-    z-index: 2000;
-    padding: 12px;
+    z-index: 2100;
+    padding-top: 60px; /* space for header */
     box-sizing: border-box;
+    overflow-y: auto; /* scrollable vertically */
   }
-  #videoPanel h3 { margin: 0 0 8px 0; font-size: 18px; text-align: center; }
   #videoPanel .video-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
     gap: 8px;
     width: 100%;
-    height: calc(100% - 40px);
     padding: 4px;
     box-sizing: border-box;
   }
@@ -43,14 +76,41 @@
     background-color: black;
   }
 
-  /* Buttons */
-  #multiSelectBtn, #showSelectedBtn, #closeBtn {
-    position: absolute; z-index: 2100; padding: 6px 12px;
-    border: none; border-radius: 6px; cursor: pointer; font-weight: bold;
+  /* Exit fullscreen button always on top */
+  #exitFullscreenBtn {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: #ff4c4c;
+    color: white;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    z-index: 4000;
+    display: none;
   }
-  #multiSelectBtn { top: 10px; right: 10px; background: #4b0082; color: white; }
-  #showSelectedBtn { top: 50px; right: 10px; background: #008080; color: white; display: none; }
-  #closeBtn { top: 10px; right: 10px; background: rgba(255,255,255,0.8); }
+
+  /* Single camera popup */
+  #singleCamPopup {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    width: 320px;
+    height: 180px;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    display: none;
+    z-index: 2000;
+  }
+  #singleCamPopup video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    cursor: pointer;
+  }
 
   /* Circle markers */
   .camera-marker {
@@ -66,19 +126,57 @@
     box-shadow: 0 0 2px black;
   }
   .camera-marker.selected { background-color: darkorange; }
+
+  /* Radar slider */
+  #radarSliderContainer {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3000;
+    background: rgba(0,0,0,0.5);
+    padding: 6px 12px;
+    border-radius: 6px;
+    color: white;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #radarSlider {
+    width: 200px;
+  }
 </style>
 </head>
 <body>
 
 <div id="map"></div>
 
-<button id="multiSelectBtn">Select Multiple Cameras</button>
-<button id="showSelectedBtn">Show Selected Cameras</button>
+<!-- Top header with buttons -->
+<div id="topHeader">
+  <button id="multiSelectBtn">Select Multiple Cameras</button>
+  <button id="showSelectedBtn">Show Selected Cameras</button>
+  <button id="cancelMultiBtn">Cancel Multi-Select</button>
+  <button id="goHelloBtn">Go to cams Page</button>
+  
+</div>
 
+<!-- Fullscreen video panel -->
 <div id="videoPanel">
-  <button id="closeBtn">×</button>
-  <h3 id="cameraTitle">Selected Cameras</h3>
   <div class="video-grid" id="videoGrid"></div>
+</div>
+
+<!-- Exit fullscreen button -->
+<button id="exitFullscreenBtn">Exit Fullscreen</button>
+
+<!-- Single camera popup -->
+<div id="singleCamPopup">
+  <video id="singleCamVideo" autoplay muted controls></video>
+</div>
+
+<!-- Radar slider -->
+<div id="radarSliderContainer">
+  <input type="range" id="radarSlider" min="0" max="8" value="0" step="1">
+  <span id="radarTimeLabel">Current</span>
 </div>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
@@ -90,11 +188,40 @@ let cameras = [];
 let multiSelectMode = false;
 let selectedCameras = [];
 
+// Initialize map
 const map = L.map('map').setView([44.0, -74.9481], 7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 const markersLayer = L.layerGroup().addTo(map);
 
-// Fetch cameras and plot
+// --- Radar layers ---
+const radarUrls = [
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m05m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m10m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m15m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m20m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m25m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m30m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m35m/{z}/{x}/{y}.png",
+  "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-m40m/{z}/{x}/{y}.png"
+];
+
+const radarLayers = radarUrls.map(url => L.tileLayer(url, {opacity: 0.7}));
+radarLayers[0].addTo(map); // show current radar
+
+// Slider to change radar frame
+const slider = document.getElementById('radarSlider');
+const radarLabel = document.getElementById('radarTimeLabel');
+slider.addEventListener('input', () => {
+  const val = parseInt(slider.value);
+  radarLayers.forEach((layer, idx) => {
+    if(map.hasLayer(layer)) map.removeLayer(layer);
+  });
+  radarLayers[val].addTo(map);
+  radarLabel.innerText = val === 0 ? 'Current' : `-${val*5} min`;
+});
+
+// --- Fetch and plot cameras ---
 fetch(apiUrl)
   .then(res => res.json())
   .then(data => {
@@ -128,7 +255,7 @@ function addMarker(camera){
     if(multiSelectMode){
       toggleSelection(marker, camera);
     } else {
-      showVideoPanel([camera]);
+      showSingleCam(camera);
     }
   });
 
@@ -137,20 +264,27 @@ function addMarker(camera){
 
 function toggleSelection(marker, camera){
   const idx = selectedCameras.indexOf(camera);
-  if(idx === -1 && selectedCameras.length < 6){
+  if(idx === -1){
     selectedCameras.push(camera);
     marker._icon.classList.add('selected');
-  } else if(idx > -1){
+  } else {
     selectedCameras.splice(idx,1);
     marker._icon.classList.remove('selected');
   }
   document.getElementById('showSelectedBtn').style.display = selectedCameras.length > 0 ? 'block':'none';
 }
 
+// Fullscreen panel for multiple cameras
 function showVideoPanel(camerasToShow){
+  document.getElementById('singleCamPopup').style.display = 'none';
   const panel = document.getElementById('videoPanel');
   const grid = document.getElementById('videoGrid');
   grid.innerHTML = '';
+
+  const n = camerasToShow.length;
+  const cols = Math.ceil(Math.sqrt(n));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
   camerasToShow.forEach(c=>{
     const vid = document.createElement('video');
     vid.controls = true;
@@ -164,15 +298,38 @@ function showVideoPanel(camerasToShow){
     }
     grid.appendChild(vid);
   });
+
   panel.style.display = 'block';
+  document.getElementById('exitFullscreenBtn').style.display = 'block';
 }
 
-// Close video panel
-document.getElementById('closeBtn').addEventListener('click', ()=>{
+// Single camera popup
+function showSingleCam(camera){
+  const popup = document.getElementById('singleCamPopup');
+  const vid = document.getElementById('singleCamVideo');
+
+  vid.pause();
+  vid.src = '';
+
+  if(Hls.isSupported()){
+    const hls = new Hls();
+    hls.loadSource(camera.VideoUrl);
+    hls.attachMedia(vid);
+  } else {
+    vid.src = camera.VideoUrl;
+  }
+
+  popup.style.display = 'block';
+  vid.onclick = () => showVideoPanel([camera]);
+}
+
+// Exit fullscreen
+document.getElementById('exitFullscreenBtn').addEventListener('click', ()=>{
   const panel = document.getElementById('videoPanel');
   const vids = panel.querySelectorAll('video');
-  vids.forEach(v=>{ v.pause(); v.src=''; });
+  vids.forEach(v => { v.pause(); v.src=''; });
   panel.style.display = 'none';
+  document.getElementById('exitFullscreenBtn').style.display = 'none';
 });
 
 // Multi-select toggle
@@ -182,16 +339,37 @@ document.getElementById('multiSelectBtn').addEventListener('click', ()=>{
   cameras.forEach(c=>{
     if(c._marker && c._marker._icon) c._marker._icon.classList.remove('selected');
   });
+
   document.getElementById('showSelectedBtn').style.display = 'none';
+  document.getElementById('cancelMultiBtn').style.display = multiSelectMode ? 'block' : 'none';
   document.getElementById('multiSelectBtn').innerText = multiSelectMode ? 'Multi-Select ON' : 'Select Multiple Cameras';
 });
 
-// Show selected videos fullscreen
+// Show selected cameras fullscreen
 document.getElementById('showSelectedBtn').addEventListener('click', ()=>{
   if(selectedCameras.length > 0){
     showVideoPanel(selectedCameras);
   }
 });
+
+// Cancel multi-select
+document.getElementById('cancelMultiBtn').addEventListener('click', ()=>{
+  multiSelectMode = false;
+  selectedCameras = [];
+  cameras.forEach(c=>{
+    if(c._marker && c._marker._icon) c._marker._icon.classList.remove('selected');
+  });
+  document.getElementById('showSelectedBtn').style.display = 'none';
+  document.getElementById('cancelMultiBtn').style.display = 'none';
+  document.getElementById('multiSelectBtn').innerText = 'Select Multiple Cameras';
+});
+
+// Go to cams page
+document.getElementById('goHelloBtn').addEventListener('click', ()=>{
+  window.location.href = 'cams.html';
+});
+
+
 </script>
 </body>
 </html>
